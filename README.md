@@ -38,10 +38,10 @@ Description: Ticking entity
 
 **根因**：原版 1.2.1 通过 `WolfEntityMixin.feedMulchToWolf` 把"覆盖物（mulch）"直接注入原版狼的 `isBreedingItem` 判断。该 mixin 无条件调用 `item.getFoodComponent().isMeat()`——当玩家手里拿的是**不是食物**的物品（如剑、泥土）时，`getFoodComponent()` 返回 `null` → 对 null 调 `isMeat()` → NPE → 一整只狼的实体 tick 崩溃 → 服务端整个崩掉。
 
-**修复方式**（与上游 1.3.0 做法一致，数据驱动而非代码注入）：
-1. **删除** `WolfEntityMixin`（mixin 提交里移除 + 源文件删除）
-2. **新增** `data/minecraft/tags/item/wolf_food.json`：将 `#bountifulfares:mulch` 挂到原版 `minecraft:wolf_food` 物品标签下
-3. 原版狼的喂食/乞食逻辑本身就识别 `#minecraft:wolf_food` 标签且自带空值判断——覆盖物依然能喂狼，但不再走自定义 mixin，天然免疫 NPE
+**修复方式**（v2 干净基线重建：代码级 null 安全重写）：
+1. **重写** `WolfEntityMixin.feedMulchToWolf`：注入原版狼 `isBreedingItem` 判定头部（cancellable）
+2. 覆盖物判定走 `#bountifulfares:mulch` 物品标签（`walnut_mulch`/`walnut_mulch_block`/`palm_mulch`/`palm_mulch_block` 四种全覆盖）→ 直接判为"可喂"
+3. 其余物品走**空安全**食物判定：`item.isFood()` 短路 + `getFoodComponent()` 判空之后才调用 `isMeat()`——手持任意非食物物品不再触发 NPE
 
 **效果**：
 - ✅ 狼吃覆盖物功能保留（`walnut_mulch`/`walnut_mulch_block`/`palm_mulch`/`palm_mulch_block` 仍可喂狼）
@@ -62,7 +62,7 @@ Description: Ticking entity
 
 因此本构建：
 - 取官方 `1.20.1` 分支在 **2025-02-12**（commit `acf5250b`，"Fix compat when using synitra"）前的干净源码——该版本可正常编译，且是 `1.3.0-1.20.1` 的开发基线
-- 从最新版源码中复刻 wolf 修复（wolf_food tag + 移除 mixin）
+- 重写 wolf 修复（`WolfEntityMixin` null 安全化，不再依赖数据包标签目录）
 - 用 **JDK 21 + Gradle 8.6 + fabric-loom 1.6.12** 官方标准流程构建
 
 ---
@@ -88,10 +88,10 @@ cd Bountiful-Fares
 git checkout acf5250b80276093e0cb76cd527aea4a860460d6   # 干净的 1.3.0 开发基线
 
 # 复刻 wolf 修复：
-# 1) 删除 src/main/java/net/hecco/bountifulfares/mixin/WolfEntityMixin.java
-# 2) 从 src/main/resources/bountifulfares.mixins.json 移除 "WolfEntityMixin" 条目
-# 3) 新增 src/main/resources/data/minecraft/tags/item/wolf_food.json:
-#    { "values": [ "#bountifulfares:mulch" ] }
+# 1) 重写 src/main/java/net/hecco/bountifulfares/mixin/WolfEntityMixin.java 的 feedMulchToWolf:
+#    - 覆盖物（BFItemTags.MULCH，即 #bountifulfares:mulch）→ setReturnValue(true)
+#    - 其余物品：item.isFood() 短路 + getFoodComponent() 判空后才调 isMeat()
+# 2) bountifulfares.mixins.json 保留 "WolfEntityMixin" 条目
 
 ./gradlew build -x test   # JDK 21 + Gradle 8.6（国内网络可换腾讯云/阿里云镜像）
 # 产物: build/libs/bountifulfares-1.3.0-1.20.1.jar
@@ -112,9 +112,9 @@ git checkout acf5250b80276093e0cb76cd527aea4a860460d6   # 干净的 1.3.0 开发
 ### 🧪 验证记录
 
 - 构建：`BUILD SUCCESSFUL`（fabric-loom 1.6.12 / Gradle 8.6 / JDK 21）
-- jar 内 `mixins.json` 合法，无 `WolfEntityMixin`
-- jar 内含 `data/minecraft/tags/item/wolf_food.json`
-- 服务器实测：狼乞食不再崩溃（2026-09-04）
+- jar 内 `mixins.json` 合法，含修复后的 `WolfEntityMixin`
+- `#bountifulfares:mulch` 标签（4 种 mulch）完整保留，喂狼判定走标签
+- 服务器实测：狼乞食不再崩溃，覆盖物可喂（2026-09-05）
 
 ---
 
@@ -123,7 +123,7 @@ git checkout acf5250b80276093e0cb76cd527aea4a860460d6   # 干净的 1.3.0 开发
 ### Bountiful Fares 1.3.0-1.20.1 (Hand-built Fixed Build)
 
 > A rebuild of Bountiful Fares that fixes the wolf begging crash (WolfEntityMixin NPE) on 1.20.1.
-> Based on the clean 1.20.1 sources from the official repo (as of 2025-02-12) + the wolf-feeding fix back-ported from the 1.3.0 branch.
+> Based on the clean 1.20.1 sources from the official repo (as of 2025-02-12) + a null-safe rewrite of the wolf-feeding mixin.
 
 - **Mod**: [Bountiful Fares](https://modrinth.com/mod/bountiful-fares) (Fabric)
 - **Game version**: Minecraft 1.20.1
@@ -149,10 +149,10 @@ Description: Ticking entity
 
 **Root cause**: Upstream 1.2.1 injects "mulch" feeding into the vanilla wolf's `isBreedingItem` check via `WolfEntityMixin.feedMulchToWolf`. That mixin unconditionally calls `item.getFoodComponent().isMeat()` — when the held item is **not food** (e.g. a sword, dirt), `getFoodComponent()` returns `null` → calling `isMeat()` on null → NPE → the wolf's entity tick crashes → the whole server goes down.
 
-**Fix** (same approach as upstream 1.3.0: data-driven instead of code injection):
-1. **Removed** `WolfEntityMixin` (removed from the mixins config + the source file deleted)
-2. **Added** `data/minecraft/tags/item/wolf_food.json`: attach `#bountifulfares:mulch` to the vanilla `minecraft:wolf_food` item tag
-3. The vanilla wolf's feeding/begging logic already recognizes the `#minecraft:wolf_food` tag with built-in null handling — wolves can still be fed mulch, but without the custom mixin, so the NPE is impossible by construction
+**Fix** (v2 clean-baseline rebuild: code-level, null-safe rewrite):
+1. **Rewritten** `WolfEntityMixin.feedMulchToWolf`: injected at the HEAD of the vanilla wolf's `isBreedingItem` check (cancellable)
+2. Mulch items are matched via the `#bountifulfares:mulch` item tag (`walnut_mulch`/`walnut_mulch_block`/`palm_mulch`/`palm_mulch_block`, all four) → returns "breeding item" directly
+3. Everything else goes through a **null-safe** food check: short-circuit on `item.isFood()` + null-check `getFoodComponent()` before calling `isMeat()` — holding any non-food item no longer triggers the NPE
 
 **Result**:
 - ✅ Wolf-eats-mulch behavior preserved (`walnut_mulch`/`walnut_mulch_block`/`palm_mulch`/`palm_mulch_block` still feed wolves)
@@ -173,7 +173,7 @@ The state of the upstream 1.20.1 branch:
 
 So this build:
 - Takes the clean sources of the official `1.20.1` branch as of **2025-02-12** (commit `acf5250b`, "Fix compat when using synitra") — this version compiles and is the dev baseline of `1.3.0-1.20.1`
-- Back-ports the wolf fix from the latest sources (wolf_food tag + mixin removal)
+- Re-writes the wolf fix in code (null-safe `WolfEntityMixin`, no reliance on datapack tag directories)
 - Builds with the standard toolchain: **JDK 21 + Gradle 8.6 + fabric-loom 1.6.12**
 
 ---
@@ -199,10 +199,10 @@ cd Bountiful-Fares
 git checkout acf5250b80276093e0cb76cd527aea4a860460d6   # clean 1.3.0 dev baseline
 
 # Reproduce the wolf fix:
-# 1) Delete src/main/java/net/hecco/bountifulfares/mixin/WolfEntityMixin.java
-# 2) Remove the "WolfEntityMixin" entry from src/main/resources/bountifulfares.mixins.json
-# 3) Add src/main/resources/data/minecraft/tags/item/wolf_food.json:
-#    { "values": [ "#bountifulfares:mulch" ] }
+# 1) Rewrite feedMulchToWolf in src/main/java/net/hecco/bountifulfares/mixin/WolfEntityMixin.java:
+#    - mulch items (BFItemTags.MULCH, i.e. #bountifulfares:mulch) → setReturnValue(true)
+#    - everything else: short-circuit on item.isFood() + null-check getFoodComponent() before isMeat()
+# 2) Keep the "WolfEntityMixin" entry in bountifulfares.mixins.json
 
 ./gradlew build -x test   # JDK 21 + Gradle 8.6
 # Output: build/libs/bountifulfares-1.3.0-1.20.1.jar
@@ -223,9 +223,9 @@ This build (Bountiful Fares Fixed) is released under **MIT-0** (MIT No Attributi
 ### 🧪 Verification
 
 - Build: `BUILD SUCCESSFUL` (fabric-loom 1.6.12 / Gradle 8.6 / JDK 21)
-- The jar's `mixins.json` is valid and contains no `WolfEntityMixin`
-- The jar contains `data/minecraft/tags/item/wolf_food.json`
-- Live-tested on a server: wolf begging no longer crashes (2026-09-04)
+- The jar's `mixins.json` is valid and contains the fixed `WolfEntityMixin`
+- The `#bountifulfares:mulch` tag (4 mulch items) is intact; mulch feeding is tag-driven
+- Live-tested on a server: wolf begging no longer crashes, mulch feeding works (2026-09-05)
 
 ---
 
