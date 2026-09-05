@@ -50,6 +50,34 @@ Description: Ticking entity
 
 ---
 
+#### 崩溃：客户端启动即崩（BlockDustParticleMixin / Connector remap）——v3 修复
+
+**现象**：把 v2 构建的 jar 装进客户端（曲奇小镇整合包）后，游戏在 `Initializing game` 阶段直接崩，报 `MixinTransformerError → InvalidInjectionException`，指向 `bountifulfares.mixins.json:BlockDustParticleMixin`：
+
+```
+Expected (ClientLevel;DDDDDD;BlockState;CallbackInfo)V
+but found (ClientLevel;DDDDDD;BlockState;BlockPos;CallbackInfo)V
+```
+
+**根因**（两层）：
+1. v2 是基于干净的 `acf5250b` 基线构建的，但该基线的 `BlockDustParticleMixin` 注入目标用了 `@Inject(method = "<init>*")`（**构造器通配符注入**）
+2. 客户端通过 **Sinytra Connector** 把 Fabric mod 转译到 Forge。Connector 对"构造器注入型 mixin"的 **remap 有缺陷**——把 `BlockDustParticle` 构造器的 `BlockPos` 参数映射错位，导致 mixin 签名与 1.20.1 实际构造器对不上 → 客户端加载必崩
+
+> 这个 mixin 只是把 `IGNORE_PARTICLE_TINT` 标签的方块粒子染色调灰（纯客户端视觉微调），删掉对游戏功能零影响。
+
+**修复方式**（v3）：
+1. 从 `bountifulfares.mixins.json` 的 `client` 列表移除 `BlockDustParticleMixin`
+2. 删除 `BlockDustParticleMixin.java` 源码（及其唯一使用者 `ParticleColorAccessor.java`，一并清理，避免残留未注册 mixin 类）
+3. 服务端 NPE 修复（WolfEntityMixin null 安全）保持 v2 版本不变
+
+**效果**：
+- ✅ 客户端可正常启动进游戏
+- ✅ 服务端狼乞食 NPE 修复保留
+- ✅ 粒子染色只是视觉微调，删除无功能损失
+
+> ⚠️ **使用提示**：mod 文件名必须用**纯 ASCII**（如 `bountifulfares-1.3.0-1.20.1.jar`），**不要用中文名**——Connector 对中文文件名的 remap 缓存会生成错误的 `_mapped_srg` 中间产物，同样会导致签名错位崩溃。若已发生，删除 `mods/.connector/` 缓存目录后重试。
+
+
 ### 🧱 为什么需要手动构建
 
 上游在该分支上的版本情况：
@@ -160,6 +188,34 @@ Description: Ticking entity
 - ✅ No unprotected `getFoodComponent()` calls remain
 
 ---
+
+#### Crash: client fails to start (BlockDustParticleMixin / Connector remap) — fixed in v3
+
+**Symptom**: After installing the v2 jar into the client (a modpack), the game crashes during `Initializing game` with `MixinTransformerError → InvalidInjectionException` pointing at `bountifulfares.mixins.json:BlockDustParticleMixin`:
+
+```
+Expected (ClientLevel;DDDDDD;BlockState;CallbackInfo)V
+but found (ClientLevel;DDDDDD;BlockState;BlockPos;CallbackInfo)V
+```
+
+**Root cause** (two layers):
+1. v2 was built from the clean `acf5250b` baseline, but that baseline's `BlockDustParticleMixin` injects via `@Inject(method = "<init>*")` (a **constructor wildcard injection**)
+2. The client runs the Fabric mod through **Sinytra Connector** onto Forge. Connector's remapping of "constructor-injecting mixins" is **buggy** — it mis-maps the `BlockPos` parameter of the `BlockDustParticle` constructor, so the mixin descriptor no longer matches the real 1.20.1 constructor → guaranteed crash on client load
+
+> This mixin merely re-tints block-dust particles gray for the `IGNORE_PARTICLE_TINT` tag (a pure cosmetic client tweak). Removing it has zero impact on gameplay.
+
+**Fix** (v3):
+1. Removed `BlockDustParticleMixin` from the `client` list in `bountifulfares.mixins.json`
+2. Deleted `BlockDustParticleMixin.java` (and its only consumer `ParticleColorAccessor.java`, to avoid leftover unregistered mixin classes)
+3. The server-side wolf NPE fix (null-safe `WolfEntityMixin`) is kept unchanged from v2
+
+**Result**:
+- ✅ The client now starts and enters the game normally
+- ✅ Server-side wolf-begging NPE fix preserved
+- ✅ Particle tinting was cosmetic only — no functional loss
+
+> ⚠️ **Usage note**: keep the mod filename **pure ASCII** (e.g. `bountifulfares-1.3.0-1.20.1.jar`) — **do not use Chinese characters in the filename**. Connector's remap cache mangles non-ASCII names into a broken `_mapped_srg` intermediate jar, which also causes a signature-mismatch crash. If it already happened, delete the `mods/.connector/` cache directory and retry.
+
 
 ### 🧱 Why a hand-built rebuild is needed
 
